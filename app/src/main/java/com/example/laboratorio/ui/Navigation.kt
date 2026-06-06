@@ -61,7 +61,7 @@ private fun MainScaffold(sessionVm: SessionViewModel) {
         bottomBar = {
             NavigationBar {
                 val tabs = listOf(
-                    "gps" to (Icons.Default.LocationOn to "GNSS"),
+                    "gps" to (Icons.Default.LocationOn to "GNSS2"),
                     "media" to (Icons.Default.CameraAlt to "Multimedia"),
                     "audio" to (Icons.Default.Mic to "Audio"),
                     "sync" to (Icons.Default.CloudSync to "Sync"),
