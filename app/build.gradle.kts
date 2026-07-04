@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)               // procesador de anotaciones Room
+    kotlin("plugin.serialization") version "2.2.10"
 }
 
 android {
@@ -104,5 +105,10 @@ dependencies {
     // ── Permisos en tiempo de ejecución para Compose ──
     implementation("com.google.accompanist:accompanist-permissions:0.34.0")
 
+    // ── Network ──  Laboratorio 7
+    implementation(libs.retrofit.core)
+    implementation(libs.retrofit.kotlin.serialization)
+    implementation(libs.okhttp.logging)
+    implementation(libs.kotlinx.serialization.json)
 
 }

@@ -36,10 +36,10 @@ abstract class DemoDataDatabase : RoomDatabase() {
         fun getInstance(context: Context): DemoDataDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
-                    context.applicationContext,
-                    DemoDataDatabase::class.java,
-                    "fleet.db"
-                ).fallbackToDestructiveMigration().build().also { INSTANCE = it }
+                                context.applicationContext,
+                                DemoDataDatabase::class.java,
+                                "fleet.db"
+                            ).fallbackToDestructiveMigration(false).build().also { INSTANCE = it }
             }
     }
 }

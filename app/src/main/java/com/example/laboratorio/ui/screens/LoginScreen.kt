@@ -7,27 +7,25 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 
 @Composable
 fun LoginScreen(
-    onSubmit: (username: String, password: String, onResult: (Boolean) -> Unit) -> Unit
+    onSubmit: (username: String, password: String, onResult: (Boolean) -> Unit) -> Unit,
+    onRegisterNavigate: () -> Unit
 ) {
     var usuario by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     var verificando by remember { mutableStateOf(false) }
 
@@ -53,7 +51,7 @@ fun LoginScreen(
         OutlinedTextField(
             value = usuario,
             onValueChange = { usuario = it },
-            label = { Text("Usuario") },
+            label = { Text("Email") },
             singleLine = true,
             enabled = !verificando,
             modifier = Modifier.fillMaxWidth()
@@ -66,7 +64,15 @@ fun LoginScreen(
             label = { Text("Contraseña") },
             singleLine = true,
             enabled = !verificando,
-            visualTransformation = PasswordVisualTransformation(),
+            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+            trailingIcon = {
+                val icon = if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff
+                val description = if (passwordVisible) "Ocultar contraseña" else "Mostrar contraseña"
+
+                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                    Icon(imageVector = icon, contentDescription = description)
+                }
+            },
             modifier = Modifier.fillMaxWidth()
         )
 
@@ -82,7 +88,7 @@ fun LoginScreen(
                 verificando = true
                 onSubmit(usuario, password) { ok ->
                     verificando = false
-                    if (!ok) error = "Credenciales incorrectas. Pruebe jkn/jkn."
+                    if (!ok) error = "Credenciales incorrectas. Revisa tu email y contraseña."
                 }
             },
             enabled = !verificando && usuario.isNotBlank() && password.isNotBlank(),
@@ -101,9 +107,21 @@ fun LoginScreen(
             }
         }
 
+        Spacer(modifier = Modifier.height(12.dp))
+
+        OutlinedButton(
+            onClick = onRegisterNavigate,
+            enabled = !verificando,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp)
+        ) {
+            Text("Registrar usuario")
+        }
+
         Spacer(modifier = Modifier.height(16.dp))
         Text(
-            "Credenciales por defecto: jkn / jkn",
+            "Usa tus credenciales de Platform API",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.outline
         )
