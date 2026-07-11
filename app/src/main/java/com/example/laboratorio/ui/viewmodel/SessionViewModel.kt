@@ -28,6 +28,11 @@ class SessionViewModel(
         initialValue = null
     )
 
+    val userId = sessionManager.userId.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.Eagerly,
+        initialValue = null
+    )
     val isDarkMode = sessionManager.isDarkMode.stateIn(
         scope        = viewModelScope,
         started      = SharingStarted.Eagerly,
@@ -47,7 +52,17 @@ class SessionViewModel(
                 )
                 if (response.isSuccessful && response.body() != null) {
                     val body = response.body()!!
-                    sessionManager.login(email, body.accessToken, body.refreshToken)
+                    // Recuperamos el user_id de /me
+                    var finalUserId: String? = null
+                    val meResponse = RetrofitClient.apiService.me(
+                        NetworkConstants.PROJECT_SLUG,
+                        "Bearer ${body.accessToken}"
+                    )
+                    if (meResponse.isSuccessful) {
+                        finalUserId = meResponse.body()?.user?.userId
+                    }
+
+                    sessionManager.login(email, body.accessToken, body.refreshToken, finalUserId)
                     onResult(true)
                 } else {
                     onResult(false)

@@ -1,6 +1,7 @@
 package com.example.laboratorio.ui.screens
 
 import android.content.Intent
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -33,13 +34,16 @@ import com.example.laboratorio.data.local.entity.GpsGoogleEntity
 import com.example.laboratorio.data.local.entity.GpsSensorsEntity
 import com.example.laboratorio.data.local.entity.MediaEntity
 import com.example.laboratorio.data.local.entity.MediaType
+import com.example.laboratorio.data.remote.RetrofitClient
+import com.example.laboratorio.data.remote.NetworkConstants
+import com.example.laboratorio.data.remote.model.GeoEventResponse
 import com.example.laboratorio.ui.viewmodel.SessionViewModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 
 enum class RecordsSource { LOCAL, REMOTE, ALL }
 
@@ -62,8 +66,8 @@ fun ProfileScreen(onLogout: () -> Unit, username: String? = null) {
             onNavigateToNotifications = { viewState = ProfileViewState.Notifications }
         )
         ProfileViewState.MyProfile     -> MyProfileScreen(username = username, sessionVm = sessionVm, onBack = { viewState = ProfileViewState.Menu })
-        ProfileViewState.LocalRecords  -> RecordsExplorerScreen(title = "Registros locales", allowedSource = RecordsSource.LOCAL, onBack = { viewState = ProfileViewState.Menu })
-        ProfileViewState.AllRecords    -> RecordsExplorerScreen(title = "Todos los registros", allowedSource = RecordsSource.ALL, onBack = { viewState = ProfileViewState.Menu })
+        ProfileViewState.LocalRecords  -> RecordsExplorerScreen(title = "Registros locales", allowedSource = RecordsSource.LOCAL, sessionVm = sessionVm, onBack = { viewState = ProfileViewState.Menu })
+        ProfileViewState.AllRecords    -> RecordsExplorerScreen(title = "Todos los registros", allowedSource = RecordsSource.ALL, sessionVm = sessionVm, onBack = { viewState = ProfileViewState.Menu })
         ProfileViewState.Sync          -> NestedScreen(title = "Sincronización",  onBack = { viewState = ProfileViewState.Menu }) { SyncScreen() }
         ProfileViewState.Notifications -> NestedScreen(title = "Notificaciones",  onBack = { viewState = ProfileViewState.Menu }) { NotificationsScreen() }
     }
@@ -125,7 +129,7 @@ private fun ProfileMenu(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RecordsExplorerScreen(title: String, allowedSource: RecordsSource, onBack: () -> Unit) {
+private fun RecordsExplorerScreen(title: String, allowedSource: RecordsSource, sessionVm: SessionViewModel, onBack: () -> Unit) {
     val context      = LocalContext.current
     val app          = context.applicationContext as DemoDataApp
 
@@ -138,6 +142,36 @@ private fun RecordsExplorerScreen(title: String, allowedSource: RecordsSource, o
     val tabs         = listOf("Todos", "GNSS", "Fotos", "Videos", "Audios")
     var sourceFilter by remember { mutableStateOf(if (allowedSource == RecordsSource.ALL) RecordsSource.ALL else RecordsSource.LOCAL) }
     var detailItem   by remember { mutableStateOf<ActivityItem?>(null) }
+
+    // Nuevos estados para controlar la consulta al servidor remoto
+    var remoteRecords by remember { mutableStateOf<List<GeoEventResponse>>(emptyList()) }
+    var isLoadingRemote by remember { mutableStateOf(false) }
+
+    // Disparador reactivo cuando el usuario pida datos remotos
+    LaunchedEffect(sourceFilter) {
+        if (sourceFilter != RecordsSource.LOCAL) {
+            isLoadingRemote = true
+            try {
+                val userId = app.sessionManager.userId.first()
+                val token = app.sessionManager.accessToken.first()
+                val authHeader = if (token != null) "Bearer $token" else null
+
+                val response = RetrofitClient.apiService.listGeoEventsORM(
+                    NetworkConstants.PROJECT_SLUG,
+                    authHeader,
+                    userId = userId,
+                    limit = 20
+                )
+                if (response.isSuccessful) {
+                    remoteRecords = response.body() ?: emptyList()
+                }
+            } catch (e: Exception) {
+                // Error silent
+            } finally {
+                isLoadingRemote = false
+            }
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -177,7 +211,12 @@ private fun RecordsExplorerScreen(title: String, allowedSource: RecordsSource, o
             }
         }
 
-        val filteredItems = remember(selectedTab, sourceFilter, googlePoints, sensorsPoints, allMedia, allAudios) {
+        // Muestra un indicador de progreso superior mientras descarga la lista de la API
+        if (isLoadingRemote) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+
+        val filteredItems = remember(selectedTab, sourceFilter, googlePoints, sensorsPoints, allMedia, allAudios, remoteRecords) {
             val localItems = mutableListOf<ActivityItem>().apply {
                 addAll(googlePoints.map  { ActivityItem.GpsGoogle(it,  isRemote = false) })
                 addAll(sensorsPoints.map { ActivityItem.GpsSensors(it, isRemote = false) })
@@ -185,16 +224,35 @@ private fun RecordsExplorerScreen(title: String, allowedSource: RecordsSource, o
                 addAll(allAudios.map     { ActivityItem.Audio(it,      isRemote = false) })
             }
 
-            // Datos remotos simulados — placeholder hasta integrar API de consulta
-            val remoteItems = if (sourceFilter != RecordsSource.LOCAL) listOf(
-                ActivityItem.GpsGoogle(GpsGoogleEntity(id = 999, latitude = -12.0463, longitude = -77.0427, accuracy = 5f, timestamp = System.currentTimeMillis() - 86400000), isRemote = true),
-                ActivityItem.Media(MediaEntity(id = 888, filePath = "", type = "PHOTO", sizeBytes = 1024, timestamp = System.currentTimeMillis() - 43200000), isRemote = true)
-            ) else emptyList()
+            // Mapeo adaptado para evitar fallas con java.time e Instant en versiones inferiores a API 26
+            val isoParser = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+
+            val mappedRemote = remoteRecords.map { res ->
+                val ts = try {
+                    // Limpiamos la Z o los milisegundos de forma segura para SimpleDateFormat
+                    val cleanDate = res.recordedAt?.take(19) ?: ""
+                    isoParser.parse(cleanDate)?.time ?: System.currentTimeMillis()
+                } catch (e: Exception) {
+                    System.currentTimeMillis()
+                }
+                ActivityItem.GpsGoogle(
+                    GpsGoogleEntity(
+                        id = res.id.toLong(),
+                        latitude = res.latitude,
+                        longitude = res.longitude,
+                        accuracy = res.accuracy?.toFloat(),
+                        timestamp = ts
+                    ),
+                    isRemote = true
+                )
+            }
 
             val combined = when (sourceFilter) {
                 RecordsSource.LOCAL  -> localItems
-                RecordsSource.REMOTE -> remoteItems
-                RecordsSource.ALL    -> localItems + remoteItems
+                RecordsSource.REMOTE -> mappedRemote
+                RecordsSource.ALL    -> localItems + mappedRemote
             }
 
             val filtered = when (selectedTab) {
@@ -259,6 +317,7 @@ private fun MenuOption(icon: ImageVector, title: String, subtitle: String, onCli
 @Composable
 private fun MyProfileScreen(username: String?, sessionVm: SessionViewModel, onBack: () -> Unit) {
     val isDarkModePref by sessionVm.isDarkMode.collectAsStateWithLifecycle()
+    val userId by sessionVm.userId.collectAsStateWithLifecycle()
     val isDark         = isDarkModePref ?: isSystemInDarkTheme()
     val context        = LocalContext.current
     val androidId      = android.provider.Settings.Secure.getString(
@@ -270,6 +329,7 @@ private fun MyProfileScreen(username: String?, sessionVm: SessionViewModel, onBa
         Spacer(modifier = Modifier.height(24.dp))
 
         ProfileMetadataItem("Username",         username ?: "N/A")
+        ProfileMetadataItem("User ID (UUID)", userId ?: "Cargando...")
         ProfileMetadataItem("Rol",              "Administrador / Operador")
         ProfileMetadataItem("Directorio Local", context.filesDir.absolutePath)
 
@@ -299,7 +359,7 @@ private fun MyProfileScreen(username: String?, sessionVm: SessionViewModel, onBa
         ProfileMetadataItem("Dispositivo",      "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
         ProfileMetadataItem("Android Version",  android.os.Build.VERSION.RELEASE)
         ProfileMetadataItem("API Level",        android.os.Build.VERSION.SDK_INT.toString())
-        ProfileMetadataItem("Android ID",       androidId ?: "N/A")   // ← nuevo Lab 6
+        ProfileMetadataItem("Android ID",       androidId ?: "N/A")
 
         Spacer(modifier = Modifier.height(32.dp))
         Button(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Volver") }
@@ -319,7 +379,7 @@ sealed class ActivityItem {
     abstract val timestamp: Long
     abstract val label: String
     abstract val icon: ImageVector
-    abstract val isRemote: Boolean           // ← nuevo Lab 6
+    abstract val isRemote: Boolean
 
     data class GpsGoogle(val data: GpsGoogleEntity, override val isRemote: Boolean) : ActivityItem() {
         override val timestamp = data.timestamp
@@ -354,7 +414,7 @@ private fun ActivityRow(item: ActivityItem, onClick: () -> Unit) {
                 item.icon, null,
                 tint = when {
                     isNoSignal    -> MaterialTheme.colorScheme.error
-                    item.isRemote -> MaterialTheme.colorScheme.tertiary  // azul/verde para nube
+                    item.isRemote -> MaterialTheme.colorScheme.tertiary
                     else          -> MaterialTheme.colorScheme.primary
                 }
             )

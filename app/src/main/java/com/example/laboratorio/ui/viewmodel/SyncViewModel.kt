@@ -1,13 +1,28 @@
 package com.example.laboratorio.ui.viewmodel
+
+import android.os.Build
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.laboratorio.data.repository.AudioRepository
 import com.example.laboratorio.data.repository.GpsRepository
 import com.example.laboratorio.data.repository.MediaRepository
+import com.example.laboratorio.data.session.SessionManager
+import com.example.laboratorio.data.remote.RetrofitClient
+import com.example.laboratorio.data.remote.NetworkConstants
+import com.example.laboratorio.data.remote.model.GeoEventRequest
+import com.example.laboratorio.data.remote.model.GeoEventResponse
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat // Compatible con API 24
+import java.util.Date             // Compatible con API 24
+import java.util.Locale           // Compatible con API 24
+import java.util.TimeZone         // Compatible con API 24
 
 data class SyncCounts(
     val gpsGoogle: Int = 0,
@@ -20,10 +35,26 @@ data class SyncCounts(
 }
 
 class SyncViewModel(
-    gpsRepository: GpsRepository,
-    mediaRepository: MediaRepository,
-    audioRepository: AudioRepository
+    private val gpsRepository: GpsRepository,
+    private val mediaRepository: MediaRepository,
+    private val audioRepository: AudioRepository,
+    private val sessionManager: SessionManager
 ) : ViewModel() {
+
+    private val _isSyncing = MutableStateFlow(false)
+    val isSyncing = _isSyncing.asStateFlow()
+
+    private val _syncMessage = MutableStateFlow<String?>(null)
+    val syncMessage = _syncMessage.asStateFlow()
+
+    private val _syncProgress = MutableStateFlow(0f)
+    val syncProgress = _syncProgress.asStateFlow()
+
+    private val _cloudRecords = MutableStateFlow<List<GeoEventResponse>>(emptyList())
+    val cloudRecords = _cloudRecords.asStateFlow()
+
+    private val _isLoadingCloud = MutableStateFlow(false)
+    val isLoadingCloud = _isLoadingCloud.asStateFlow()
 
     val counts = combine(
         gpsRepository.googleCount,
@@ -39,13 +70,139 @@ class SyncViewModel(
         SyncCounts()
     )
 
+    fun sync(onResult: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            _isSyncing.value = true
+            _syncProgress.value = 0f
+            _syncMessage.value = "Iniciando sincronización..."
+            try {
+                val googlePoints = gpsRepository.googlePoints.first()
+                val sensorsPoints = gpsRepository.sensorsPoints.first()
+
+                val deviceId = sessionManager.getDeviceId()
+                val userId = sessionManager.userId.first()
+                val token = sessionManager.accessToken.first()
+                val authHeader = if (token != null) "Bearer $token" else null
+
+                if (userId == null) {
+                    _syncMessage.value = "Error: No se encontró el ID de usuario. Por favor, cierra sesión e inicia sesión de nuevo."
+                    _isSyncing.value = false
+                    onResult(false)
+                    return@launch
+                }
+
+                val deviceModel = "${Build.MANUFACTURER} ${Build.MODEL}"
+
+                // Formateador ISO_INSTANT equivalente compatible con API 24 (ej: 2026-07-11T16:30:00Z)
+                val formatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+                    timeZone = TimeZone.getTimeZone("UTC")
+                }
+
+                var successCount = 0
+                val totalToSync = googlePoints.size + sensorsPoints.size
+
+                if (totalToSync == 0) {
+                    _syncMessage.value = "No hay datos para sincronizar"
+                    _isSyncing.value = false
+                    _syncProgress.value = 1f
+                    onResult(true)
+                    return@launch
+                }
+
+                var currentItem = 0
+                googlePoints.forEach { point ->
+                    if (point.latitude != null && point.longitude != null && point.latitude != 0.0) {
+                        val request = GeoEventRequest(
+                            userId = userId,
+                            latitude = point.latitude,
+                            longitude = point.longitude,
+                            accuracy = point.accuracy?.toDouble() ?: 0.0,
+                            speed = point.speed?.toDouble() ?: 0.0,
+                            heading = point.bearing?.toDouble() ?: 0.0,
+                            eventType = "gps_google",
+                            deviceId = deviceId,
+                            appVersion = "1.0.0",
+                            deviceModel = deviceModel,
+                            recordedAt = formatter.format(Date(point.timestamp)) // Modificado aquí
+                        )
+                        val response = RetrofitClient.apiService.createGeoEventORM(NetworkConstants.PROJECT_SLUG, authHeader, request)
+                        if (response.isSuccessful) successCount++
+                    }
+                    currentItem++
+                    _syncProgress.value = currentItem.toFloat() / totalToSync
+                }
+
+                sensorsPoints.forEach { point ->
+                    if (point.latitude != null && point.longitude != null && point.latitude != 0.0) {
+                        val request = GeoEventRequest(
+                            userId = userId,
+                            latitude = point.latitude,
+                            longitude = point.longitude,
+                            altitude = point.altitude ?: 0.0,
+                            eventType = "gps_sensors",
+                            deviceId = deviceId,
+                            appVersion = "1.0.0",
+                            deviceModel = deviceModel,
+                            recordedAt = formatter.format(Date(point.timestamp)) // Modificado aquí
+                        )
+                        val response = RetrofitClient.apiService.createGeoEventORM(NetworkConstants.PROJECT_SLUG, authHeader, request)
+                        if (response.isSuccessful) successCount++
+                    }
+                    currentItem++
+                    _syncProgress.value = currentItem.toFloat() / totalToSync
+                }
+
+                if (successCount > 0) {
+                    gpsRepository.clearAll()
+                    _syncMessage.value = "Sincronizados $successCount registros con éxito"
+                    refreshCloudData()
+                } else {
+                    _syncMessage.value = "Error al sincronizar con el servidor"
+                }
+                onResult(successCount > 0)
+            } catch (e: Exception) {
+                _syncMessage.value = "Error: ${e.localizedMessage}"
+                onResult(false)
+            } finally {
+                _isSyncing.value = false
+            }
+        }
+    }
+
+    fun refreshCloudData() {
+        viewModelScope.launch {
+            _isLoadingCloud.value = true
+            try {
+                val userId = sessionManager.userId.first()
+                val token = sessionManager.accessToken.first()
+                val authHeader = if (token != null) "Bearer $token" else null
+
+                val response = RetrofitClient.apiService.listGeoEventsORM(
+                    NetworkConstants.PROJECT_SLUG,
+                    authHeader,
+                    userId = userId,
+                    limit = 10
+                )
+
+                if (response.isSuccessful) {
+                    _cloudRecords.value = response.body() ?: emptyList()
+                }
+            } catch (e: Exception) {
+                // Silencioso o log
+            } finally {
+                _isLoadingCloud.value = false
+            }
+        }
+    }
+
     class Factory(
         private val gps: GpsRepository,
         private val media: MediaRepository,
-        private val audio: AudioRepository
+        private val audio: AudioRepository,
+        private val sessionManager: SessionManager
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
-            SyncViewModel(gps, media, audio) as T
+            SyncViewModel(gps, media, audio, sessionManager) as T
     }
 }
