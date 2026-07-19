@@ -318,6 +318,7 @@ private fun MenuOption(icon: ImageVector, title: String, subtitle: String, onCli
 private fun MyProfileScreen(username: String?, sessionVm: SessionViewModel, onBack: () -> Unit) {
     val isDarkModePref by sessionVm.isDarkMode.collectAsStateWithLifecycle()
     val userId by sessionVm.userId.collectAsStateWithLifecycle()
+    val notificationsEnabled by sessionVm.notificationsEnabled.collectAsStateWithLifecycle()
     val isDark         = isDarkModePref ?: isSystemInDarkTheme()
     val context        = LocalContext.current
     val androidId      = android.provider.Settings.Secure.getString(
@@ -353,6 +354,41 @@ private fun MyProfileScreen(username: String?, sessionVm: SessionViewModel, onBa
             }
             Switch(checked = isDark, onCheckedChange = { sessionVm.setDarkMode(it) })
         }
+
+        HorizontalDivider()
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.Notifications,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+                Column {
+                    Text(
+                        text = "Notificaciones Globales",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = "Recibir avisos de all_users",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Switch(
+                checked = notificationsEnabled,
+                onCheckedChange = { sessionVm.setNotificationsEnabled(it) }
+            )
+        }
+
         HorizontalDivider()
         Spacer(modifier = Modifier.height(16.dp))
 
